@@ -36,7 +36,7 @@ const clients = []; // Array to hold multiple client instances
 
 async function initializeClient(clientId) {
     const client = new Client({
-        authStrategy: new LocalAuth({ clientId }),
+        authStrategy: new LocalAuth({ clientId, dataPath: "Data" }),
         puppeteer: { headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] }
     });
 
