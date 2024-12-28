@@ -5,7 +5,7 @@ import path from 'path';
 import http from 'http';
 import { Server } from 'socket.io'; 
 import admin from 'firebase-admin';
-import serviceAccount from './config/wa-info-firebase-adminsdk-qi1ve-38eb1b94ec.json' assert { type: 'json' };
+import serviceAccount from './config/wa-info-firebase-adminsdk-qi1ve-6230afb3f0.json' assert { type: 'json' };
 
 admin.initializeApp({
     credential: admin.credential.cert(serviceAccount),
