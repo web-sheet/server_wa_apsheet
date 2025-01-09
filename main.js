@@ -32,17 +32,20 @@ server.listen(PORT, () => {
 app.use(express.json());
 app.use(express.static('public')); 
 
-const clients = []; // Array to hold multiple client instances
+const clients = [];   
 
 async function initializeClient(clientId) {
     const client = new Client({
-        authStrategy: new LocalAuth({ clientId, dataPath: "Data" }),
         puppeteer: { headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] }
     });
 
+    let qrCodeEnabled = false; // Flag to control QR code generation
+
     client.on('qr', qr => {
-        qrcode.generate(qr, { small: true });
-        io.emit('qr', { clientId, qr });  
+        if (qrCodeEnabled) { // Only generate QR code if enabled
+            qrcode.generate(qr, { small: true });
+            io.emit('qr', { clientId, qr });  
+        }
     });
 
     client.on('ready', async () => {
@@ -59,32 +62,41 @@ async function initializeClient(clientId) {
         io.emit('userLoggedIn', { number: userNumber, time: timestamp });
     });
 
-    client.on('message_create', message => {
-        console.log(message.body);
-    });
-
     client.on('disconnected', async (reason) => {
-        console.log(`${clientId} was logged out:`, reason);
+        console.log(`${clientId} was logged out:`, reason);       
         const userNumber = client.info.wid.user; 
 
         await admin.database().ref(`users/${userNumber}`).update({
             status: 'offline'
         });
+        io.emit('userDisconnected', { number: userNumber });           
+        
+        qrCodeEnabled = false;            
+            const index = clients.findIndex(c => c.info.wid.user === userNumber);
+            if (index !== -1) {
+                clients.splice(index, 1);
+            }
 
-        io.emit('userDisconnected', { number: userNumber });
-        await client.logout(); 
+
     });
 
+    qrCodeEnabled = true;  
     await client.initialize(); 
-    clients.push(client); // Store the client instance
+    clients.push(client); 
 }
 
 app.post('/initializeClient', async (req, res) => {
-    const { clientId } = req.body;
+    const { clientId } = req.body; 
+    const existingClient = clients.find(c => c.info.wid.user === clientId);
+    if (existingClient) {
+        await existingClient.destroy();  
+        const index = clients.indexOf(existingClient);
+        clients.splice(index, 1);  
+    }
+
     await initializeClient(clientId);
     res.status(200).send({ result: `Client ${clientId} initialized` });
 });
-
 
 
 
@@ -100,8 +112,6 @@ app.get('/clients', async (req, res) => {
 });
 
 
-
-
 app.get('/userInfo/:number', async (req, res) => {
     const { number } = req.params;
     try {
@@ -111,6 +121,31 @@ app.get('/userInfo/:number', async (req, res) => {
     } catch (error) {
         console.error('Error retrieving user info:', error);
         res.status(500).send({ error: 'Failed to retrieve user info' });
+    }
+});
+
+app.post('/logout/:clientId', async (req, res) => {
+    const { clientId } = req.params;
+
+    
+    const client = clients.find(c => c.info.wid.user === clientId);
+
+    if (!client) {
+        return res.status(404).send({ error: 'Client not found.' });
+    }
+
+    try {
+        // await client.destroy();  
+        console.log(`${clientId} has been logged out successfully.`);        
+        await admin.database().ref(`users/${clientId}`).update({
+            status: 'offline'
+        });
+
+        io.emit('userDisconnected', { number: clientId });
+        res.status(200).send({ result: `${clientId} logged out successfully.` });
+    } catch (error) {
+        console.error(`Error logging out client ${clientId}:`, error);
+        res.status(500).send({ error: 'Failed to log out client.' });
     }
 });
 
@@ -125,15 +160,12 @@ app.get('/qr', (req, res) => {
 app.post('/sendMessage', async (req, res) => {
     const { sender, to, message } = req.body;
 
-    // Validate input
     if (!sender || !to || !message) {
         return res.status(400).send({ error: 'Sender, recipient, and message are required.' });
     }
 
-    // Log input values
     console.log('Sender:', sender, 'Recipient:', to, 'Message:', message);
-
-    // Find the client instance based on the sender ID
+ 
     const client = clients.find(c => c.info.wid.user === sender);
     
     if (!client) {
@@ -141,11 +173,9 @@ app.post('/sendMessage', async (req, res) => {
         return res.status(404).send({ error: 'Client not found.' });
     }
 
-    // Format the recipient's number
     const formattedRecipient = `${to}@c.us`;
 
-    try {
-        // Send the message
+    try { 
         await client.sendMessage(formattedRecipient, message);
         res.status(200).send({ result: 'Message sent successfully.' });
     } catch (error) {
@@ -154,3 +184,30 @@ app.post('/sendMessage', async (req, res) => {
     }
 });
 
+
+app.delete('/deleteClient/:clientId', async (req, res) => {
+    const { clientId } = req.params;
+
+    // Find the client in the clients array
+    const clientIndex = clients.findIndex(c => c.info.wid.user === clientId);
+    if (clientIndex === -1) {
+        return res.status(404).send({ error: 'Client not found.' });
+    }
+
+    try {
+        // Destroy the client instance
+        await clients[clientIndex].destroy();
+        console.log(`${clientId} has been deleted successfully.`);
+
+        // Remove the client from the Firebase database
+        await admin.database().ref(`users/${clientId}`).remove();
+
+        // Remove the client from the clients array
+        clients.splice(clientIndex, 1);
+
+        res.status(200).send({ result: `${clientId} deleted successfully.` });
+    } catch (error) {
+        console.error(`Error deleting client ${clientId}:`, error);
+        res.status(500).send({ error: 'Failed to delete client.' });
+    }
+});
